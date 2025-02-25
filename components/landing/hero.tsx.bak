@@ -1,0 +1,1017 @@
+/*
+<ai_context>
+This client component provides the hero section for the landing page.
+</ai_context>
+*/
+
+"use client"
+
+import { Button } from "@/components/ui/button"
+import { motion } from "framer-motion"
+import { ChevronRight, Pen } from "lucide-react"
+import Link from "next/link"
+import Image from "next/image"
+import { useEffect, useRef, useState } from "react"
+import posthog from "posthog-js"
+import { ImageDistortionEffect, ImageDistortionEffectRef } from "./image-distortion-effect"
+
+// Add ResizeObserver type for TypeScript
+declare global {
+  interface Window {
+    ResizeObserver: any;
+  }
+}
+
+export const HeroSection = () => {
+  const heroRef = useRef<HTMLDivElement>(null)
+  const canvasRef = useRef<HTMLCanvasElement>(null)
+  const requestRef = useRef<number | null>(null)
+  const mouseX = useMotionValue(0)
+  const mouseY = useMotionValue(0)
+  const [dimensions, setDimensions] = useState({ width: 0, height: 0 })
+  const [isLoading, setIsLoading] = useState(true)
+  
+  // Smoother motion with springs
+  const springX = useSpring(mouseX, { stiffness: 50, damping: 15 })
+  const springY = useSpring(mouseY, { stiffness: 50, damping: 15 })
+  
+  // Normalized coordinates for effects (0-1 range)
+  const normalizedX = useMotionValue(0.5)
+  const normalizedY = useMotionValue(0.5)
+  
+  // WebGL effect variables
+  const [scene, setScene] = useState<THREE.Scene | null>(null)
+  const [camera, setCamera] = useState<THREE.Camera | null>(null)
+  const [renderer, setRenderer] = useState<THREE.WebGLRenderer | null>(null)
+  const [uniforms, setUniforms] = useState<any>(null)
+  const [isHovering, setIsHovering] = useState(false)
+  
+  // Mouse velocity for distortion strength
+  const [prevMouse, setPrevMouse] = useState({ x: 0, y: 0 })
+  const [mouseVelocity, setMouseVelocity] = useState(0)
+  
+  // Dynamic text shadow
+  const [textShadowStyle, setTextShadowStyle] = useState(`
+    0px 0px 10px rgba(0,0,0,0.5),
+    0px 0px 5px rgba(230, 119, 0, 0.3)
+  `)
+  
+  // Preload image variable throughout component
+  const preloadImageRef = useRef<HTMLImageElement | null>(null);
+  // Track if the image is completely loaded
+  const imageLoadedRef = useRef<boolean>(false);
+  
+  const distortionRef = useRef<ImageDistortionEffectRef>(null)
+  
+  // Function to load the texture directly with Three.js
+  const loadTextureDirectly = useCallback(() => {
+    if (!renderer || !scene || !camera || !uniforms) return;
+    
+    // Create a loading manager for the texture
+    const loadingManager = new THREE.LoadingManager();
+    
+    // Set up callbacks for the loading process
+    loadingManager.onLoad = () => {
+      console.log("Texture loaded successfully");
+      imageLoadedRef.current = true;
+      
+      // Use a longer delay for smoother transition
+      setTimeout(() => {
+        setIsLoading(false);
+      }, 300);
+    };
+    
+    loadingManager.onProgress = (url, loaded, total) => {
+      // For large textures, you could implement a progress indicator
+      console.log(`Loading texture: ${Math.round((loaded / total) * 100)}%`);
+    };
+    
+    loadingManager.onError = (url) => {
+      console.error("Error loading texture:", url);
+      setIsLoading(false);
+    };
+    
+    // Create a texture loader with the manager
+    const loader = new THREE.TextureLoader(loadingManager);
+    
+    // Allow crossOrigin textures (useful for production with CDNs)
+    loader.crossOrigin = 'anonymous';
+    
+    // Actual loading process
+    loader.load(
+      '/hero.png', 
+      (loadedTexture: THREE.Texture) => {
+        if (!renderer || !scene || !camera || !uniforms) return;
+              
+        // Apply better texture settings for image quality and performance
+        loadedTexture.minFilter = THREE.LinearFilter;
+        loadedTexture.magFilter = THREE.LinearFilter;
+        loadedTexture.generateMipmaps = false;
+        
+        // Ensure the texture uses the correct wrapping mode
+        loadedTexture.wrapS = THREE.ClampToEdgeWrapping;
+        loadedTexture.wrapT = THREE.ClampToEdgeWrapping;
+        
+        // Set texture to update
+        loadedTexture.needsUpdate = true;
+        
+        // Update the shader's texture uniform
+        uniforms.uTexture.value = loadedTexture;
+        
+        // Force a render to update the canvas with the new texture
+        renderer.render(scene, camera);
+      },
+      undefined, // onProgress callback handled by loadingManager
+      (error) => {
+        console.error("Error loading hero texture:", error);
+        setIsLoading(false);
+      }
+    );
+  }, [renderer, scene, camera, uniforms]);
+  
+  // Update dimensions on resize
+  useEffect(() => {
+    const updateDimensions = () => {
+      if (heroRef.current) {
+        const rect = heroRef.current.getBoundingClientRect()
+        setDimensions({ width: rect.width, height: rect.height })
+      }
+    }
+    
+    window.addEventListener('resize', updateDimensions)
+    updateDimensions()
+    
+    return () => window.removeEventListener('resize', updateDimensions)
+  }, [])
+  
+  // Handle mouse movement
+  useEffect(() => {
+    const handleMouseMove = (e: MouseEvent) => {
+      if (heroRef.current) {
+        const rect = heroRef.current.getBoundingClientRect()
+        
+        // Raw position
+        const rawX = e.clientX - rect.left
+        const rawY = e.clientY - rect.top
+        
+        // Set motion values
+        mouseX.set(rawX)
+        mouseY.set(rawY)
+        
+        // Normalized position (0-1)
+        normalizedX.set(rawX / rect.width)
+        
+        // Convert screen Y coordinate (0 at top) to WebGL Y coordinate (0 at bottom)
+        // by flipping the normalized value: 1 - (y / height)
+        normalizedY.set(1 - (rawY / rect.height))
+        
+        // Calculate velocity for effect intensity
+        const dx = normalizedX.get() - prevMouse.x
+        const dy = normalizedY.get() - prevMouse.y
+        const velocity = Math.sqrt(dx * dx + dy * dy)
+        setMouseVelocity(Math.min(velocity * 20, 0.1)) // Cap the velocity
+        
+        setPrevMouse({ 
+          x: normalizedX.get(), 
+          y: normalizedY.get() 
+        })
+        
+        // Update uniforms for WebGL effect
+        if (uniforms) {
+          uniforms.uMouse.value.x = normalizedX.get()
+          uniforms.uMouse.value.y = normalizedY.get() // Already inverted above
+          uniforms.uVelo.value = mouseVelocity
+        }
+      }
+    }
+    
+    const handleMouseEnter = () => {
+      setIsHovering(true)
+    }
+    
+    const handleMouseLeave = () => {
+      setIsHovering(false)
+      // Set cursor position outside the valid range when not hovering
+      if (uniforms) {
+        uniforms.uMouse.value.x = -0.1
+        uniforms.uMouse.value.y = -0.1
+      }
+    }
+    
+    window.addEventListener("mousemove", handleMouseMove)
+    heroRef.current?.addEventListener("mouseenter", handleMouseEnter)
+    heroRef.current?.addEventListener("mouseleave", handleMouseLeave)
+    
+    return () => {
+      window.removeEventListener("mousemove", handleMouseMove)
+      heroRef.current?.removeEventListener("mouseenter", handleMouseEnter)
+      heroRef.current?.removeEventListener("mouseleave", handleMouseLeave)
+    }
+  }, [mouseX, mouseY, normalizedX, normalizedY, uniforms, mouseVelocity, prevMouse])
+  
+  // Initialize WebGL scene
+  useEffect(() => {
+    if (!canvasRef.current || !dimensions.width) return
+    
+    let isLoading = true
+    
+    // Initialize Three.js scene
+    const newScene = new THREE.Scene()
+    const newCamera = new THREE.OrthographicCamera(
+      -1, // left
+      1, // right
+      1, // top
+      -1, // bottom
+      0.1, // near
+      1000 // far
+    )
+    newCamera.position.z = 1
+    
+    // Create WebGL renderer
+    const newRenderer = new THREE.WebGLRenderer({
+      canvas: canvasRef.current,
+      alpha: true,
+      antialias: true,
+      preserveDrawingBuffer: true // Prevent flashing during resize
+    })
+    newRenderer.setSize(dimensions.width, dimensions.height)
+    newRenderer.setPixelRatio(Math.min(window.devicePixelRatio, 2)) // Cap pixel ratio for performance
+    
+    // Create a placeholder solid color background while texture loads
+    const placeholderTexture = new THREE.Texture();
+    placeholderTexture.needsUpdate = true;
+    const placeholderCanvas = document.createElement('canvas');
+    placeholderCanvas.width = 2;
+    placeholderCanvas.height = 2;
+    const placeholderCtx = placeholderCanvas.getContext('2d');
+    if (placeholderCtx) {
+      placeholderCtx.fillStyle = '#1a1a1a';
+      placeholderCtx.fillRect(0, 0, 2, 2);
+      placeholderTexture.image = placeholderCanvas;
+      placeholderTexture.needsUpdate = true;
+    }
+    
+    // Keep a reference to the texture to prevent garbage collection
+    const textureRef = { current: placeholderTexture };
+    
+    // Use conditional to avoid SSR issues with window
+    let preloadImage: HTMLImageElement | null = null;
+    
+    // Browser-safe image loading - only execute in browser context
+    if (typeof window !== 'undefined') {
+      preloadImage = new window.Image();
+      preloadImage.src = '/hero.png';
+      
+      // Store in ref for access elsewhere in component
+      preloadImageRef.current = preloadImage;
+      
+      // Error handling for image preloading
+      preloadImage.onerror = () => {
+        console.error("Error preloading hero image");
+        setIsLoading(false);
+        
+        // Load texture directly if preloading fails
+        loadTextureDirectly();
+      };
+      
+      // Wait for the browser to load the image first to utilize cache
+      preloadImage.onload = () => {
+        loadTextureDirectly();
+      };
+    } else {
+      // In SSR context, we'll rely on loading the texture directly when component mounts
+      // This will happen in useEffect
+    }
+    
+    // Create shader material with custom uniforms
+    const newUniforms = {
+      uTexture: { value: textureRef.current },
+      uTime: { value: 0 },
+      uMouse: { value: new THREE.Vector2(0.5, 0.5) },
+      uVelo: { value: 0 },
+      uResolution: { value: new THREE.Vector2(dimensions.width, dimensions.height) }
+    }
+    
+    // Create distortion shader
+    const fragmentShader = `
+      uniform float uTime;
+      uniform sampler2D uTexture;
+      uniform vec2 uMouse;
+      uniform float uVelo;
+      uniform vec2 uResolution;
+      varying vec2 vUv;
+      
+      float circle(vec2 uv, vec2 disc_center, float disc_radius, float border_size) {
+        uv -= disc_center;
+        float dist = sqrt(dot(uv, uv));
+        return smoothstep(disc_radius+border_size, disc_radius-border_size, dist);
+      }
+
+      // Hash function for pseudo-random values
+      float hash12(vec2 p) {
+        float h = dot(p,vec2(127.1,311.7));	
+        return fract(sin(h)*43758.5453123);
+      }
+
+      // Function to create a more organic ripple effect
+      float organicRipple(vec2 uv, vec2 center, float time) {
+        float dist = distance(uv, center);
+        float distort = sin(dist * 20.0 - time * 2.0) * 0.005;
+        distort += sin(dist * 30.0 - time * 3.0) * 0.003;
+        distort += sin(dist * 50.0 - time * 1.5) * 0.001;
+        return distort;
+      }
+      
+      void main() {
+        // Start with our original UV coordinates
+        vec2 newUV = vUv;
+        
+        // Image dimensions and aspect ratio calculation
+        const float imageAspect = 16.0 / 9.0; // 1920x1080 aspect ratio
+        
+        // Get the screen aspect ratio
+        float screenAspect = uResolution.x / uResolution.y;
+        
+        // Transform UVs for proper "cover" behavior with clean edges
+        if (screenAspect < imageAspect) {
+          // Screen is narrower than image: fit width and crop height
+          // We want to scale our image to fit horizontally
+          float scale = screenAspect / imageAspect;
+          // Center vertically
+          float offset = 0.5 - scale / 2.0;
+          // Map UV.y from [0,1] to a properly scaled and centered range
+          newUV.y = offset + newUV.y * scale;
+        } else {
+          // Screen is wider than image: fit height and crop width
+          // We want to scale our image to fit vertically
+          float scale = imageAspect / screenAspect;
+          // Center horizontally
+          float offset = 0.5 - scale / 2.0;
+          // Map UV.x from [0,1] to a properly scaled and centered range
+          newUV.x = offset + newUV.x * scale;
+        }
+        
+        // Discard pixels outside the image bounds
+        if (newUV.x < 0.0 || newUV.x > 1.0 || newUV.y < 0.0 || newUV.y > 1.0) {
+          // Just use a valid UV point to avoid artifacts
+          // The fragment will still be rendered at full opacity
+          newUV = vec2(0.5, 0.5);
+        }
+        
+        // Calculate distance from mouse 
+        vec2 mouse = uMouse;
+        
+        // Determine if we're at default position (no cursor/not hovering)
+        bool isDefault = (mouse.x < 0.01 && mouse.y < 0.01) || (mouse.x > 0.99 && mouse.y > 0.99);
+
+        // Only apply effect when hovering
+        if (!isDefault) {
+          // Create a magnification effect directly AT the cursor position
+          float dist = distance(newUV, mouse);
+          
+          // Define inner and outer radius for feathering
+          float innerRadius = 0.05;  // Core of the effect
+          float maxRadius = 0.20;    // Outer edge where effect ends
+          float featherZone = 0.25;  // Extended soft edge for colors
+          
+          // Create a smoother intensity falloff with wider transition
+          // Start very strong in the center, then gentle fade out to the edges
+          float intensity = 1.0 - smoothstep(innerRadius, maxRadius, dist);
+          
+          // Use a smoother power curve for the falloff - less sharp than before
+          intensity = pow(intensity, 1.5);
+          
+          // Apply a gradual feathering at the edge - this applies the distortion
+          // even slightly outside the maxRadius, but with rapidly diminishing strength
+          if (dist < maxRadius * 1.2) {
+            // Adjust magnetism strength based on distance
+            float magnetStrength = intensity * 0.35;
+            
+            // Mix function creates the pull toward mouse position
+            newUV = mix(newUV, mouse, magnetStrength);
+            
+            // Add some organic distortion - more pronounced near center
+            float ripple = organicRipple(newUV, mouse, uTime);
+            newUV += ripple * intensity;
+            
+            // Add velocity-based intensity
+            float veloPower = uVelo * 10.0;
+            
+            // Comic-book style "action" distortion lines - smoother transition
+            if (veloPower > 0.05) {
+              // Calculate direction from point to cursor for action lines
+              vec2 dir = normalize(newUV - mouse);
+              float angle = atan(dir.y, dir.x);
+              float actionLines = sin(angle * 12.0 + uTime * 5.0) * 0.003 * veloPower;
+              
+              // Fade out action lines more gradually
+              float actionIntensity = intensity * smoothstep(maxRadius, innerRadius, dist);
+              newUV += dir * actionLines * actionIntensity;
+            }
+          }
+          
+          // Apply comic-book style color separation with high contrast
+          // Use a wider radius for color effects than for distortion
+          if (dist < maxRadius * featherZone) {
+            // Smoother falloff for color effects
+            float separationIntensity = smoothstep(maxRadius * featherZone, innerRadius * 0.8, dist) * uVelo * 5.0;
+            
+            // More dramatic color splitting for "pow" effect
+            float r = texture2D(uTexture, newUV + vec2(0.02, 0.02) * separationIntensity).r;
+            float g = texture2D(uTexture, newUV).g;
+            float b = texture2D(uTexture, newUV - vec2(0.02, 0.02) * separationIntensity).b;
+            
+            // High contrast comic effect
+            r = smoothstep(0.3, 0.7, r); 
+            g = smoothstep(0.2, 0.8, g);
+            b = smoothstep(0.3, 0.7, b);
+            
+            // Create orange-tinted color with enhanced contrast
+            vec4 color = vec4(r, g, b, 1.0);
+            color.r = min(color.r * 1.3, 1.0); // Boost red for orange
+            color.g = min(color.g * 0.85, 1.0); // Reduce green slightly
+            
+            gl_FragColor = color;
+          } else {
+            // Normal rendering outside effect radius
+            gl_FragColor = texture2D(uTexture, newUV);
+          }
+        } else {
+          // When not hovering, render normally
+          gl_FragColor = texture2D(uTexture, vUv);
+        }
+      }
+    `;
+    
+    const vertexShader = `
+      varying vec2 vUv;
+      
+      void main() {
+        // Pass UVs unchanged to fragment shader
+        vUv = uv;
+        // Standard vertex position calculation
+        gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+      }
+    `;
+    
+    // Create material
+    const material = new THREE.ShaderMaterial({
+      uniforms: newUniforms,
+      vertexShader: vertexShader,
+      fragmentShader: fragmentShader,
+      transparent: true
+    });
+    
+    // Create plane geometry to fill the canvas
+    // We'll handle the aspect ratio in the shader, so we just use a full-screen quad here
+    const geometry = new THREE.PlaneGeometry(2, 2, 1, 1)
+    const mesh = new THREE.Mesh(geometry, material)
+    newScene.add(mesh)
+    
+    // Add texture sizing properties to ensure it remains centered and crops sides if needed
+    if (textureRef.current) {
+      textureRef.current.matrixAutoUpdate = true
+      textureRef.current.center.set(0.5, 0.5)
+      // Use 'cover' equivalent for WebGL texture
+      textureRef.current.repeat.set(1, 1)
+      
+      // Adjust texture wrapping and matrix to maintain center alignment
+      textureRef.current.wrapS = THREE.ClampToEdgeWrapping
+      textureRef.current.wrapT = THREE.ClampToEdgeWrapping
+    }
+    
+    setScene(newScene)
+    setCamera(newCamera)
+    setRenderer(newRenderer)
+    setUniforms(newUniforms)
+    
+    // Animation loop
+    const animate = () => {
+      if (newUniforms && newRenderer && newScene && newCamera) {
+        // Update time uniform for animations
+        newUniforms.uTime.value += 0.01
+        
+        // Make sure velocity gets updated in the shader
+        newUniforms.uVelo.value = Math.min(mouseVelocity, 0.1)
+        
+        // Gradually decay velocity when there's no movement
+        if (mouseVelocity > 0.001) {
+          setMouseVelocity(prev => prev * 0.95)
+        }
+        
+        // Only apply idle movement when hovering
+        if (isHovering) {
+          // Small subtle movement for more organic feel
+          const time = newUniforms.uTime.value
+          const idleAmplitude = 0.0005 // Reduced from previous value
+          newUniforms.uMouse.value.x += Math.sin(time * 0.3) * idleAmplitude
+          newUniforms.uMouse.value.y += Math.cos(time * 0.2) * idleAmplitude
+        }
+        
+        // Render the scene
+        newRenderer.render(newScene, newCamera)
+      }
+      requestRef.current = requestAnimationFrame(animate)
+    }
+    
+    requestRef.current = requestAnimationFrame(animate)
+    
+    return () => {
+      if (requestRef.current) {
+        cancelAnimationFrame(requestRef.current)
+      }
+      if (newRenderer) {
+        newRenderer.dispose()
+      }
+      if (geometry) {
+        geometry.dispose()
+      }
+      if (material) {
+        material.dispose()
+      }
+    }
+  }, [dimensions])
+  
+  // Update text shadow based on mouse position
+  useEffect(() => {
+    const updateTextShadow = () => {
+      const x = normalizedX.get()
+      const y = normalizedY.get()
+      
+      if (typeof x === 'number' && typeof y === 'number') {
+        const offsetX = (x - 0.5) * 10
+        const offsetY = (y - 0.5) * 10
+        
+        setTextShadowStyle(`
+          ${offsetX * -0.5}px ${offsetY * -0.5}px 10px rgba(0,0,0,0.5),
+          ${offsetX * -0.2}px ${offsetY * -0.2}px 5px rgba(230, 119, 0, 0.3)
+        `)
+      }
+    }
+    
+    // Set up animation frame loop for smooth updates
+    let frameId: number
+    
+    const loop = () => {
+      updateTextShadow()
+      frameId = requestAnimationFrame(loop)
+    }
+    
+    loop()
+    
+    return () => {
+      if (frameId) cancelAnimationFrame(frameId)
+    }
+  }, [normalizedX, normalizedY])
+  
+  // Handle window resize more effectively to prevent flickering
+  useEffect(() => {
+    // Create a ResizeObserver for more accurate resize detection
+    let resizeObserver: ResizeObserver | null = null;
+    
+    if (typeof ResizeObserver !== 'undefined' && heroRef.current) {
+      // Create the observer
+      resizeObserver = new ResizeObserver((entries) => {
+        if (!entries.length) return;
+        
+        const entry = entries[0];
+        const { width, height } = entry.contentRect;
+        
+        // Only process if we have all the necessary components and the size actually changed
+        if (renderer && uniforms && scene && camera && 
+            (Math.abs(width - dimensions.width) > 1 || Math.abs(height - dimensions.height) > 1)) {
+          
+          // Store current transform and position to restore after resize
+          const oldTransform = new THREE.Matrix4().copy(camera.projectionMatrix);
+          
+          // Update dimensions
+          setDimensions({ width, height });
+          
+          // Immediately update renderer size without waiting for React to re-render
+          // This helps eliminate flicker
+          renderer.setSize(width, height, false);
+          
+          // Update the resolution uniform for the shader
+          uniforms.uResolution.value.x = width;
+          uniforms.uResolution.value.y = height;
+          
+          // Force a render pass to update the screen immediately
+          renderer.render(scene, camera);
+        }
+      });
+      
+      // Start observing our element
+      resizeObserver.observe(heroRef.current);
+    }
+    
+    // Fallback to window resize event if ResizeObserver is not available
+    const handleWindowResize = () => {
+      if (!heroRef.current || !renderer || !uniforms || !scene || !camera) return;
+      
+      const rect = heroRef.current.getBoundingClientRect();
+      
+      // Only update if dimensions actually changed
+      if (Math.abs(rect.width - dimensions.width) > 1 || Math.abs(rect.height - dimensions.height) > 1) {
+        setDimensions({ width: rect.width, height: rect.height });
+        
+        // Update renderer immediately
+        renderer.setSize(rect.width, rect.height, false);
+        
+        // Update resolution uniform
+        uniforms.uResolution.value.x = rect.width;
+        uniforms.uResolution.value.y = rect.height;
+        
+        // Force a render
+        renderer.render(scene, camera);
+      }
+    };
+    
+    // Add window resize handler as backup
+    window.addEventListener('resize', handleWindowResize);
+    
+    return () => {
+      // Clean up resize observer
+      if (resizeObserver && heroRef.current) {
+        resizeObserver.unobserve(heroRef.current);
+        resizeObserver.disconnect();
+      }
+      
+      window.removeEventListener('resize', handleWindowResize);
+    };
+  }, [renderer, uniforms, scene, camera, dimensions]);
+  
+  // Handle touch events for mobile 
+  useEffect(() => {
+    if (!heroRef.current) return
+    
+    const handleTouchMove = (e: TouchEvent) => {
+      if (heroRef.current && e.touches.length > 0) {
+        const rect = heroRef.current.getBoundingClientRect()
+        const touch = e.touches[0]
+        
+        // Raw position
+        const rawX = touch.clientX - rect.left
+        const rawY = touch.clientY - rect.top
+        
+        // Normalized position (0-1)
+        const normX = rawX / rect.width
+        // Invert Y coordinate to match WebGL coordinate system
+        const normY = 1 - (rawY / rect.height)
+        
+        normalizedX.set(normX)
+        normalizedY.set(normY)
+        
+        // Calculate velocity for touch
+        const dx = normX - prevMouse.x
+        const dy = normY - prevMouse.y
+        const velocity = Math.sqrt(dx * dx + dy * dy)
+        setMouseVelocity(Math.min(velocity * 30, 0.2)) // Stronger effect for touch
+        
+        setPrevMouse({ x: normX, y: normY })
+        
+        // Update uniforms for WebGL effect
+        if (uniforms) {
+          uniforms.uMouse.value.x = normX
+          uniforms.uMouse.value.y = normY // Already inverted above
+          uniforms.uVelo.value = Math.min(velocity * 30, 0.2)
+        }
+      }
+    }
+    
+    const heroElement = heroRef.current
+    heroElement.addEventListener('touchmove', handleTouchMove)
+    
+    return () => {
+      heroElement.removeEventListener('touchmove', handleTouchMove)
+    }
+  }, [normalizedX, normalizedY, prevMouse, uniforms])
+  
+  // PostHog tracking
+  const handleGetStartedClick = () => {
+    posthog.capture("clicked_get_started")
+  }
+  
+  // Predefined action line positions to prevent hydration errors
+  const actionLines = [
+    { width: "35%", top: "15%", left: "5%", transform: "rotate(-2deg)" },
+    { width: "52%", top: "32%", left: "12%", transform: "rotate(-4deg)" },
+    { width: "40%", top: "48%", left: "8%", transform: "rotate(3deg)" },
+    { width: "45%", top: "62%", left: "14%", transform: "rotate(-1deg)" },
+    { width: "38%", top: "75%", left: "6%", transform: "rotate(2deg)" },
+    { width: "55%", top: "85%", left: "10%", transform: "rotate(-3deg)" },
+    { width: "42%", top: "25%", left: "7%", transform: "rotate(1deg)" },
+    { width: "48%", top: "55%", left: "4%", transform: "rotate(-2deg)" },
+    { width: "36%", top: "68%", left: "9%", transform: "rotate(4deg)" },
+    { width: "50%", top: "38%", left: "3%", transform: "rotate(-1deg)" }
+  ];
+  
+  // Handle initial texture loading only on client side
+  useEffect(() => {
+    // Only load directly if we're in browser context and the texture isn't already loading
+    if (typeof window !== 'undefined' && isLoading && !preloadImageRef.current?.complete) {
+      loadTextureDirectly();
+    }
+  }, [isLoading, loadTextureDirectly]); // Run when these dependencies change
+  
+  return (
+    <div 
+      ref={heroRef}
+      className="relative min-h-[90vh] overflow-hidden"
+      style={{
+        background: 'linear-gradient(145deg, rgba(46, 38, 30, 0.97) 0%, rgba(22, 28, 24, 0.95) 100%)'
+      }}
+    >
+      {/* Fallback image using Next.js Image for optimal loading */}
+      <div 
+        className="absolute inset-0 w-full h-full z-[2] pointer-events-none bg-[#1a1a1a]"
+        style={{ 
+          opacity: isLoading ? 1 : 0,
+          transition: 'opacity 0.7s ease-in-out',
+          willChange: 'opacity'
+        }}
+      >
+        <Image
+          src="/hero.png"
+          alt="HandFont background"
+          fill
+          priority
+          sizes="100vw"
+          fetchPriority="high"
+          quality={90}
+          className="object-cover"
+          onLoad={() => {
+            // When Next.js image is loaded, trigger WebGL texture loading if not already started
+            if (!imageLoadedRef.current && isLoading) {
+              loadTextureDirectly();
+            }
+          }}
+        />
+      </div>
+      
+      {/* WebGL Canvas for distortion effect - higher z-index than image, lower than content */}
+      <canvas 
+        ref={canvasRef}
+        className="absolute inset-0 w-full h-full z-[3] pointer-events-none"
+        style={{ 
+          touchAction: 'none', // Helps with touch events
+          opacity: isLoading ? 0 : 1,
+          transition: 'opacity 0.7s ease-in-out',
+          willChange: 'opacity, transform'
+        }}
+      />
+      
+      {/* Background image is now hidden since we're using WebGL */}
+      <div className="absolute inset-0 w-full h-full z-[1]">
+        {/* Main image container - we don't actually show this since WebGL handles rendering */}
+        <div className="opacity-0 w-full h-full">
+          <Image
+            src="/hero.png"
+            alt="Robot writing with a pen on paper"
+            fill
+            className="object-cover object-center select-none"
+            priority
+            quality={95}
+          />
+        </div>
+        
+        {/* Grain texture */}
+        <div className="absolute inset-0 z-[4] bg-noise opacity-[0.07] mix-blend-overlay pointer-events-none"></div>
+        
+        {/* Vignette effect */}
+        <div className="absolute inset-0 z-[4] bg-radial-gradient pointer-events-none"></div>
+
+        {/* Animated paper texture effect */}
+        <div className="absolute inset-0 z-[4] pointer-events-none">
+          <svg 
+            width="100%" 
+            height="100%" 
+            viewBox="0 0 100 100" 
+            preserveAspectRatio="none"
+            className="w-full h-full"
+          >
+            {/* Paper texture fill pattern */}
+            <defs>
+              <pattern id="paper-texture" patternUnits="userSpaceOnUse" width="200" height="200">
+                <filter id="paper-noise">
+                  <feTurbulence type="fractalNoise" baseFrequency="0.04" numOctaves="5" stitchTiles="stitch" />
+                  <feColorMatrix type="matrix" values="1 0 0 0 0 0 1 0 0 0 0 0 1 0 0 0 0 0 0.2 0" />
+                </filter>
+                <rect width="200" height="200" fill="#f5f5f5" filter="url(#paper-noise)" opacity="0.08" />
+              </pattern>
+            </defs>
+            
+            {/* Background fill with paper texture */}
+            <rect width="100%" height="100%" fill="url(#paper-texture)" className="opacity-30" />
+            
+            {/* Torn paper edge at the bottom */}
+            <path
+              d={`M0,100 L100,100 L100,98 
+                C95,98.5 90,97.5 85,98
+                C80,98.5 75,97 70,98.5
+                C65,99 60,98 55,97.5
+                C50,97 45,98 40,98.5
+                C35,99 30,98 25,97.5
+                C20,97 15,98.5 10,98
+                C5,97.5 0,98 0,98 Z`}
+              fill="#211a15"
+              opacity="0.7"
+            />
+          </svg>
+        </div>
+      </div>
+
+      {/* Content with improved contrast and readability - higher z-index than the canvas */}
+      <div className="relative z-[10] flex flex-col items-center justify-center min-h-[90vh] px-6 sm:px-8">
+        <div className="max-w-screen-xl w-full mx-auto">
+          {/* Comic-book style badge/logo with teal accent */}
+          <motion.div
+            initial={{ opacity: 0, y: -20 }}
+            animate={{ opacity: 1, y: 0 }}
+            transition={{ duration: 0.6, ease: "easeOut" }}
+            className="mx-auto bg-teal-700 px-4 py-2 rounded-lg w-fit mb-12 border-4 border-black shadow-[6px_6px_0px_0px_rgba(0,0,0,0.9)] transform rotate-[-2deg]"
+            whileHover={{ scale: 1.05, rotate: 0 }}
+          >
+            <div className="text-white font-black flex items-center gap-1 text-base tracking-wider">
+              <motion.span 
+                className="font-extrabold text-white"
+                style={{ 
+                  fontFamily: "Arial, sans-serif", 
+                  fontSize: "1.25rem",
+                  fontWeight: 900,
+                  letterSpacing: "0.05em" 
+                }}
+              >
+                Turn your handwriting into a font!
+              </motion.span>
+              <ChevronRight className="ml-1 size-3 text-white" />
+            </div>
+          </motion.div>
+
+          {/* Comic-book style heading with dramatic effect */}
+          <motion.div
+            initial={{ opacity: 0, y: 20 }}
+            animate={{ opacity: 1, y: 0 }}
+            transition={{ duration: 0.8, delay: 0.2, ease: "easeOut" }}
+            className="relative text-center"
+          >
+            {/* Heading with simplified shadow */}
+            <motion.h1 
+              className="text-6xl sm:text-7xl md:text-8xl font-black text-white relative z-[1] uppercase"
+              style={{
+                fontFamily: "Arial, sans-serif",
+                textShadow: "4px 4px 0px #000",
+                WebkitTextStroke: '2px black',
+              }}
+            >
+              Create your<br />personal font.
+            </motion.h1>
+            
+            {/* Comic-style action lines with teal accents */}
+            <motion.div 
+              className="absolute -z-[1] inset-0 opacity-25"
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 0.25 }}
+              transition={{ delay: 0.8, duration: 0.6 }}
+            >
+              {actionLines.map((line, i) => (
+                <div 
+                  key={i} 
+                  className={`absolute ${i % 3 === 0 ? 'bg-teal-500' : 'bg-amber-500'}`}
+                  style={{ 
+                    height: '2px', 
+                    width: line.width,
+                    top: line.top,
+                    left: line.left,
+                    transform: line.transform,
+                  }}
+                />
+              ))}
+            </motion.div>
+            
+            {/* Decorative comic-book style separator */}
+            <div className="relative h-10 mt-5">
+              <motion.div 
+                className="h-2 bg-black mx-auto w-40 sm:w-60 relative"
+                initial={{ width: 0 }}
+                animate={{ width: "60%" }}
+                transition={{ duration: 0.8, delay: 1.1 }}
+              >
+                <motion.div 
+                  className="absolute inset-0 bg-gradient-to-r from-amber-500 via-teal-500 to-amber-500"
+                  initial={{ x: "-100%" }}
+                  animate={{ x: "100%" }}
+                  transition={{ duration: 1.5, delay: 1.3 }}
+                />
+              </motion.div>
+            </div>
+          </motion.div>
+
+          {/* Comic-book style description panel with improved styling */}
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            transition={{ duration: 0.6, delay: 0.6, ease: "easeOut" }}
+            className="mt-10 max-w-2xl mx-auto relative"
+            whileHover={{ y: -5 }}
+          >
+            <div className="bg-white border-4 border-black p-4 rounded-lg transform rotate-1 shadow-[6px_6px_0px_0px_rgba(0,0,0,0.7)]">
+              {/* Speech bubble pointer with refined design */}
+              <div className="absolute -top-5 left-1/2 -translate-x-1/2 w-8 h-8 bg-white border-t-4 border-l-4 border-r-4 border-black transform rotate-45 z-[-1]" />
+              
+              <p className="text-black font-bold text-lg md:text-xl text-center leading-relaxed" style={{ fontFamily: "Arial, sans-serif" }}>
+                HandFont turns your unique handwriting into a digital font you can use anywhere.
+                <span className="bg-amber-100 border-b-2 border-teal-500 px-1">Write, capture, and create</span> - it's that simple!
+              </p>
+            </div>
+          </motion.div>
+
+          {/* Comic-book style CTA Button */}
+          <motion.div
+            initial={{ opacity: 0, y: 10 }}
+            animate={{ opacity: 1, y: 0 }}
+            transition={{ duration: 0.6, delay: 0.8, ease: "easeOut" }}
+            className="mt-12 flex justify-center relative"
+            whileHover={{ scale: 1.05, rotate: -1 }}
+            whileTap={{ scale: 0.98 }}
+          >
+            <Link
+              href="/fonts"
+              onClick={handleGetStartedClick}
+              className="group relative"
+              onMouseEnter={() => setIsHovering(true)}
+              onMouseLeave={() => setIsHovering(false)}
+            >
+              {/* Comic action burst behind button */}
+              <motion.div 
+                className="absolute -inset-4 bg-gradient-to-br from-amber-500 to-teal-600 rounded-[30%] rotate-12 z-[-1]"
+                initial={{ scale: 0.8, opacity: 0.7 }}
+                animate={{ 
+                  scale: isHovering ? [0.9, 1.1, 0.9] : 0.9,
+                  opacity: isHovering ? 1 : 0.7,
+                  rotate: isHovering ? 5 : 12
+                }}
+                transition={{ 
+                  duration: 2, 
+                  repeat: Infinity,
+                  repeatType: "reverse" 
+                }}
+              />
+              
+              {/* Spiky burst effect with teal accents */}
+              {isHovering && (
+                <motion.div 
+                  className="absolute -inset-6"
+                  initial={{ opacity: 0, scale: 0.8 }}
+                  animate={{ opacity: 1, scale: 1 }}
+                  exit={{ opacity: 0, scale: 0.8 }}
+                >
+                  {Array.from({ length: 8 }).map((_, i) => (
+                    <motion.div
+                      key={i}
+                      className={`absolute h-3 w-10 ${i % 2 === 0 ? 'bg-amber-400' : 'bg-teal-400'}`}
+                      style={{ 
+                        left: '50%',
+                        top: '50%',
+                        originX: 0,
+                        rotate: i * 45,
+                      }}
+                      initial={{ scaleX: 0 }}
+                      animate={{ scaleX: 1 }}
+                      transition={{ duration: 0.3 }}
+                    />
+                  ))}
+                </motion.div>
+              )}
+              
+              {/* Comic-style button with improved design */}
+              <Button className="relative bg-amber-600 border-4 border-black text-white text-xl px-8 py-6 h-auto rounded-lg font-black uppercase shadow-[4px_4px_0px_0px_rgba(0,0,0,1)]">
+                <Pen className="mr-2 size-5 text-teal-200" />
+                Get Started!
+              </Button>
+            </Link>
+          </motion.div>
+        </div>
+      </div>
+      
+      {/* Bottom decorative elements - comic style with teal accent */}
+      <div className="absolute bottom-0 left-0 right-0 h-20 bg-gradient-to-t from-black to-transparent z-[5]">
+        <div className="absolute bottom-0 left-0 right-0 h-4 bg-gradient-to-r from-amber-600 via-teal-700 to-amber-600"></div>
+      </div>
+      
+      {/* Comic-book style scroll indicator */}
+      <motion.div 
+        className="absolute bottom-8 left-1/2 -translate-x-1/2 z-[6] bg-white p-2 rounded-lg border-2 border-black font-bold text-black text-xs uppercase shadow-[3px_3px_0px_0px_rgba(0,0,0,0.8)]"
+        animate={{ 
+          y: [0, 10, 0],
+        }}
+        transition={{
+          duration: 1.5,
+          repeat: Infinity,
+          repeatType: "loop"
+        }}
+      >
+        Scroll Down!
+      </motion.div>
+    </div>
+  )
+}

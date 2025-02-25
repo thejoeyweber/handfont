@@ -23,8 +23,9 @@ import "./globals.css"
 const inter = Inter({ subsets: ["latin"] })
 
 export const metadata: Metadata = {
-  title: "Mckay's App Template",
-  description: "A full-stack web app template."
+  title: "HandFont - Create Your Handwriting Font",
+  description:
+    "Convert your handwriting into a custom digital font with HandFont."
 }
 
 export default async function RootLayout({
@@ -46,7 +47,7 @@ export default async function RootLayout({
       <html lang="en" suppressHydrationWarning>
         <body
           className={cn(
-            "bg-background mx-auto min-h-screen w-full scroll-smooth antialiased",
+            "bg-background comic-theme mx-auto min-h-screen w-full scroll-smooth antialiased",
             inter.className
           )}
         >

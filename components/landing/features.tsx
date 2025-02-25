@@ -14,11 +14,11 @@ import {
 } from "@/components/ui/card"
 import { motion } from "framer-motion"
 import {
-  AppWindow,
-  Database,
-  DollarSign,
-  LucideIcon,
-  Shield
+  PencilLine,
+  Smartphone,
+  QrCode,
+  Download,
+  LucideIcon
 } from "lucide-react"
 
 interface FeatureProps {
@@ -29,24 +29,27 @@ interface FeatureProps {
 
 const features: FeatureProps[] = [
   {
-    title: "Frontend",
-    description: "Next.js, Tailwind, Shadcn, Framer Motion",
-    icon: AppWindow
+    title: "Handwriting to Font",
+    description:
+      "Convert your unique handwriting into a personalized digital font",
+    icon: PencilLine
   },
   {
-    title: "Backend",
-    description: "Postgres, Supabase, Drizzle ORM, Server Actions",
-    icon: Database
+    title: "Draw on Any Device",
+    description:
+      "Use a tablet, stylus, or even your finger to capture your handwriting",
+    icon: Smartphone
   },
   {
-    title: "Auth",
-    description: "Clerk",
-    icon: Shield
+    title: "QR Code Sync",
+    description: "Seamlessly transfer your drawing session between devices",
+    icon: QrCode
   },
   {
-    title: "Payments",
-    description: "Stripe",
-    icon: DollarSign
+    title: "Download & Use",
+    description:
+      "Download your font and use it in all your favorite applications",
+    icon: Download
   }
 ]
 
@@ -75,7 +78,7 @@ export const FeaturesSection = () => {
           animate={{ opacity: 1, y: 0 }}
           transition={{ duration: 0.8, ease: "easeOut" }}
         >
-          <h2 className="mb-12 text-center text-4xl font-bold">Tech Stack</h2>
+          <h2 className="mb-12 text-center text-4xl font-bold">Key Features</h2>
           <div className="mx-auto grid max-w-6xl grid-cols-1 gap-8 md:grid-cols-2 lg:grid-cols-4">
             {features.map((feature, index) => (
               <FeatureCard key={index} {...feature} />
